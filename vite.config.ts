@@ -294,6 +294,17 @@ export default defineConfig(({ mode }) => {
       tailwindcss(),
       visionProxyPlugin(env),
     ],
+    optimizeDeps: {
+      exclude: ['@paddleocr/paddleocr-js'],
+      include:[
+        'clipper-lib',
+        '@techstark/opencv-js',
+      ],
+    },
+
+    worker: {
+      format: 'es',
+    },
     resolve: {
       alias: {
         // Alias @ to the src directory

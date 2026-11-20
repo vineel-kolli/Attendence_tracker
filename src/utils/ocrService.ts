@@ -9,7 +9,7 @@ import { createWorker, Worker, RecognizeResult } from 'tesseract.js';
 // OCR Configuration constants
 const OCR_CONFIG = {
   LANGUAGE: 'eng',
-  WHITELIST: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:/ ',
+  //WHITELIST: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:/ ',
   MIN_CONFIDENCE: 60,
   MAX_IMAGE_WIDTH: 1600,
   MAX_IMAGE_HEIGHT: 1600,
@@ -22,11 +22,29 @@ const SUPPORTED_FILE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/bm
 /**
  * Result returned after OCR processing
  */
+/**
+ * A recognized word and its position in the processed image.
+ */
+export interface OCRWord {
+  text: string;
+  confidence: number;
+  bbox: {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  };
+}
+
+/**
+ * Result returned after OCR processing.
+ */
 export interface OCRResult {
   text: string;
   confidence: number;
   lines: string[];
   processingTimeMs: number;
+  words: OCRWord[];
 }
 
 /**
@@ -114,41 +132,22 @@ export const preprocessImage = async (
         // Draw original image
         ctx.drawImage(img, 0, 0, width, height);
 
-        onProgress?.(15, 'Enhancing contrast...');
+        onProgress?.(15, 'Preparing image for OCR...');
 
-        // Get image data for pixel manipulation
-        const imageData = ctx.getImageData(0, 0, width, height);
-        const data = imageData.data;
-
-        // Apply grayscale and contrast enhancement
-        for (let i = 0; i < data.length; i += 4) {
-          // Convert to grayscale using luminance formula
-          const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-
-          // Apply contrast enhancement (factor of 1.5)
-          const contrastFactor = 1.5;
-          const enhanced = ((gray - 128) * contrastFactor + 128);
-
-          // Apply threshold for cleaner text (adaptive binarization)
-          const threshold = 128;
-          const binarized = enhanced > threshold ? 255 : Math.max(0, enhanced * 0.8);
-
-          data[i] = binarized;     // R
-          data[i + 1] = binarized; // G
-          data[i + 2] = binarized; // B
-          // Alpha channel stays the same
-        }
-
-        ctx.putImageData(imageData, 0, 0);
+        // Preserve the original colors and grid lines.
+        // Aggressive thresholding can erase faint text and thin borders.
+        // The image has already been resized if necessary.
 
         onProgress?.(20, 'Image ready for OCR...');
 
-        // Convert to base64 PNG
-        const processedImage = canvas.toDataURL('image/png', 1.0);
+        const processedImage = canvas.toDataURL('image/png');
 
-        console.log(`[OCR] Image preprocessed: ${img.width}x${img.height} -> ${width}x${height}`);
+        console.log(
+          `[OCR] Image prepared: ${img.width}x${img.height} -> ${width}x${height}`
+        );
 
         resolve(processedImage);
+
       } catch (error) {
         reject(error);
       }
@@ -197,7 +196,6 @@ const getWorker = async (onProgress?: OCRProgressCallback): Promise<Worker> => {
 
     // Set recognition parameters for better accuracy
     await ocrWorker.setParameters({
-      tessedit_char_whitelist: OCR_CONFIG.WHITELIST,
       preserve_interword_spaces: '1',
     });
 
@@ -236,12 +234,34 @@ export const performOCR = async (
     onProgress?.(30, 'Running OCR...');
 
     // Perform text recognition
-    const result: RecognizeResult = await worker.recognize(processedImage);
+    const result: RecognizeResult = await worker.recognize(
+      processedImage,
+      {},
+      { blocks: true }
+    );
 
     onProgress?.(95, 'Processing results...');
 
     const text = result.data.text;
     const confidence = result.data.confidence;
+
+    // Extract words from Tesseract's block -> paragraph -> line hierarchy.
+    const words: OCRWord[] = (result.data.blocks ?? []).flatMap((block) =>
+      block.paragraphs.flatMap((paragraph) =>
+        paragraph.lines.flatMap((line) =>
+          line.words.map((word) => ({
+            text: word.text,
+            confidence: word.confidence,
+            bbox: {
+              x0: word.bbox.x0,
+              y0: word.bbox.y0,
+              x1: word.bbox.x1,
+              y1: word.bbox.y1,
+            },
+          }))
+        )
+      )
+    );
 
     // Split text into lines and clean up
     const lines = text
@@ -260,6 +280,7 @@ export const performOCR = async (
       confidence,
       lines,
       processingTimeMs,
+      words,
     };
   } finally {
     isProcessing = false;
